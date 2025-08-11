@@ -33,18 +33,12 @@ builder.Services.AddSingleton<SemanticSearch>();
 builder.Services.AddChatClient(chatClient).UseFunctionInvocation().UseLogging();
 builder.Services.AddEmbeddingGenerator(embeddingGenerator);
 
-string mongoConnectionString = builder.Configuration["CosmosDB:MongoConnectionString"];
-;
-string databaseId = builder.Configuration["CosmosDB:DatabaseId"] ;
-string containerId = builder.Configuration["CosmosDB:ContainerId"] ;
 
-var mongoClient = new MongoClient(mongoConnectionString);
-builder.Services.AddSingleton(mongoClient);
-
-var elasticsearchUrl = builder.Configuration["Elasticsearch:Url"] ;
-var ElasticsearchIndex = builder.Configuration["Elasticsearch:Index"];
-var username = builder.Configuration["Elasticsearch:Username"];
-var password = builder.Configuration["Elasticsearch:Password"];
+var elasticsearchUrl = builder.Configuration["Elasticsearch:Url"] ?? throw new InvalidOperationException("Missing ElasticSearch url");
+var ElasticsearchIndex = builder.Configuration["Elasticsearch:Index"] ?? throw new InvalidOperationException("Missing Elastic Search Index");
+var username = builder.Configuration["Elasticsearch:Username"] ?? throw new InvalidOperationException("Missing Elastic search username");
+var password = builder.Configuration["Elasticsearch:Password"] ?? throw new InvalidOperationException("Missing Elastic search password");
+var connectionString = builder.Configuration["Azure:BlobStorage:ConnectionString"] ?? throw new InvalidOperationException("Missing Azure Blob Storage connection string");
 
 var app = builder.Build();
 
@@ -65,21 +59,35 @@ app.MapRazorComponents<App>()
 Console.WriteLine("Starting data ingestion...");
 using(var scope = app.Services.CreateScope())
 {
-    var logger = scope.ServiceProvider.GetRequiredService<ILogger<ElasticsearchSource>>();
-    var config = scope.ServiceProvider.GetRequiredService<IConfiguration>();
-
-    var indices = new[]
+    try
     {
-        $"{ElasticsearchIndex}-allcustomers",
-        $"{ElasticsearchIndex}-allorders"
-    };
-
-    foreach (var index in indices)
-    {
-        var ingestionSource = new ElasticsearchSource(logger, config, index);
-        await DataIngestor.IngestDataAsync(app.Services, ingestionSource);
-    }
+       var logger = scope.ServiceProvider.GetRequiredService<ILogger<ElasticsearchSource>>();
+        var config = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+        var indices = new[]
+        {
+            $"{ElasticsearchIndex}-allcustomers",
+            $"{ElasticsearchIndex}-allorders",
+            $"{ElasticsearchIndex}-allproducts"
+        };
+        foreach (var index in indices)
+        {
+            var ingestionSource = new ElasticsearchSource(logger, config, index);
+            await DataIngestor.IngestDataAsync(app.Services, ingestionSource);
+        }
+        
+        }
+        catch (Exception ex)
+        {
+        Console.WriteLine("Elasticsearch ingestion failed: " + ex.Message);
+        }
+        var azureFileLogger = scope.ServiceProvider.GetRequiredService<ILogger<AzureFileStorageSource>>();
+        var azureFileSource = new AzureFileStorageSource(
+        connectionString,
+        containerName:"lexicon-chatbot-test",
+        directoryPrefix:"0000cfa77c2ee828bec499993eb"
+    );
+    await DataIngestor.IngestDataAsync(app.Services, azureFileSource); 
 }
-Console.WriteLine("Finished CosmosDB ingestion.");
+Console.WriteLine("Finished data ingestion.");
 
 app.Run();

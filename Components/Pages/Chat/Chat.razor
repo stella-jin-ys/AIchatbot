@@ -52,6 +52,22 @@
         messages.Add(new(ChatRole.System, SystemPrompt));
         chatOptions.Tools = [AIFunctionFactory.Create(SearchAsync)];
     }
+    private IEnumerable<ChatMessage> ReduceChatMessages(IReadOnlyList<ChatMessage> messages)
+{
+    var systemMessages = messages.TakeWhile(m => m.Role == ChatRole.System);
+    var searchResultMessages = messages
+        .Where(m => m.Role == ChatRole.Assistant && m.Text?.Contains("<result") == true)
+        .TakeLast(5);
+   var chatMessages = messages
+        .Where(m =>
+            (m.Role == ChatRole.User || m.Role == ChatRole.Assistant) &&
+            (m.Text?.Contains("<result") != true) &&
+            !string.IsNullOrEmpty(m.Text))
+        .TakeLast(10);
+    return systemMessages
+        .Concat(searchResultMessages)
+        .Concat(chatMessages);
+}
 
     private async Task AddUserMessageAsync(ChatMessage userMessage)
     {
@@ -62,11 +78,14 @@
         chatSuggestions?.Clear();
         await chatInput!.FocusAsync();
 
+        // Trim the messages
+        var reducedMessages = ReduceChatMessages(messages);
+
         // Stream and display a new response from the IChatClient
         var responseText = new TextContent("");
         currentResponseMessage = new ChatMessage(ChatRole.Assistant, [responseText]);
         currentResponseCancellation = new();
-        await foreach (var update in ChatClient.GetStreamingResponseAsync([.. messages], chatOptions, currentResponseCancellation.Token))
+        await foreach (var update in ChatClient.GetStreamingResponseAsync(reducedMessages, chatOptions, currentResponseCancellation.Token))
         {
             messages.AddMessages(update, filter: c => c is not TextContent);
             responseText.Text += update.Text;

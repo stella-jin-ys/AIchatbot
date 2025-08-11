@@ -41,7 +41,7 @@ public class PDFDirectorySource(string sourceDirectory) : IIngestionSource
         return Task.FromResult(deletedDocuments);
     }
 
-    public Task<IEnumerable<IngestedChunk>> CreateChunksForDocumentAsync(IngestedDocument document)
+    public  Task<IEnumerable<IngestedChunk>> CreateChunksForDocumentAsync(IngestedDocument document)
     {
         using var pdf = PdfDocument.Open(Path.Combine(sourceDirectory, document.DocumentId));
         var paragraphs = pdf.GetPages().SelectMany(GetPageParagraphs).ToList();

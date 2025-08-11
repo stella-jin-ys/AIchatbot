@@ -40,7 +40,7 @@ public class ElasticsearchSource : IIngestionSource
             .Size(1000) // Adjust as needed
             .Scroll(scrollTimeout)
             .Query(q => q.MatchAll())
-            .Source(src => src.Includes(i => i.Fields("Name","Status","Type","OrderNumber","CreatedAt","CustomerName","TotalPrice","OrderStatus","OrderCurrency","PaymentStatus")))
+            .Source(src => src.Includes(i => i.Fields("Name","Status","Type","OrderNumber","CreatedAt","CustomerName","TotalPrice","OrderStatus","OrderCurrency","PaymentStatus","Id","ProductId", "CustomerIds" )))
         );
         if (!searchResponse.IsValid)
         {
@@ -48,51 +48,47 @@ public class ElasticsearchSource : IIngestionSource
             return newDocs;
         }
         var scrollId = searchResponse.ScrollId;
-        while(true){
-         foreach (var hit in searchResponse.Hits)
+        while(true)
         {
-            var id = hit.Id;
-            var json = hit.Source.ToString();
-
-            // Generate a SHA256 hash of the document content
-            using var sha = SHA256.Create();
-            var hashBytes = sha.ComputeHash(Encoding.UTF8.GetBytes(json));
-            var version = Convert.ToHexString(hashBytes);
-
-            bool exists = existingDocuments.Any(e => e.DocumentId == id && e.DocumentVersion == version);
-
-    // If no existing docs, treat all as new
-            if (existingDocuments.Count == 0 || !exists)
-            {
-                newDocs.Add(new IngestedDocument
+             foreach (var hit in searchResponse.Hits)
                 {
-                    Key = Guid.NewGuid().ToString(),
-                    SourceId = SourceId,
-                    DocumentId = id,
-                    DocumentVersion = version
-                });
-            }
-            else
-            {
-                _logger.LogInformation("⏭️ Skipping already ingested doc: {docId}", id);
-            }
-        }
-        // Fetch next batch
-            searchResponse = await _client.ScrollAsync<dynamic>(scrollTimeout, scrollId);
-            if (!searchResponse.IsValid)
-            {
-                _logger.LogError("Scroll fetch failed: {Error}", searchResponse.OriginalException.Message);
-                break;
-            }
+                    var id = hit.Id;
+                    var json = hit.Source.ToString();
 
-            if (searchResponse.Hits.Count == 0)
-                break; // Done
+                 // Generate a SHA256 hash of the document content
+                    using var sha = SHA256.Create();
+                    var hashBytes = sha.ComputeHash(Encoding.UTF8.GetBytes(json));
+                    var version = Convert.ToHexString(hashBytes);
 
-            scrollId = searchResponse.ScrollId;
+                    bool exists = existingDocuments.Any(e => e.DocumentId == id && e.DocumentVersion == version);
+
+                    // If no existing docs, treat all as new
+                     if (existingDocuments.Count == 0 || !exists)
+                        {
+                           newDocs.Add(new IngestedDocument
+                            {
+                            Key = Guid.NewGuid().ToString(),
+                            SourceId = SourceId,
+                            DocumentId = id,
+                            DocumentVersion = version
+                            });
+                        }
+                    else
+                        {
+                          _logger.LogInformation("⏭️ Skipping already ingested doc: {docId}", id);
+                         }
+                }
+                // Fetch next batch
+                searchResponse = await _client.ScrollAsync<dynamic>(scrollTimeout, scrollId);
+                if (!searchResponse.IsValid || searchResponse.Hits.Count == 0)
+                {
+                    break;
+                }
+
+                scrollId = searchResponse.ScrollId;
         }
- // Clear scroll context
+        // Clear scroll context
         await _client.ClearScrollAsync(c => c.ScrollId(scrollId));
-
         return newDocs;
     } 
 
@@ -113,21 +109,30 @@ public class ElasticsearchSource : IIngestionSource
         var source = getResponse.Source as IDictionary<string, object>;
         var stringBuilder = new StringBuilder();
 
-        // You can choose which fields to include
         foreach (var kvp in source)
         {
-            // Skip large fields
-            if (kvp.Value?.ToString()?.Length > 1000)
-            {
-                stringBuilder.AppendLine($"{kvp.Key}: {kvp.Value.ToString().Substring(0, 1000)}... [truncated]");
-            }
+            var value = kvp.Value?.ToString();
+            if (value?.Length > 3000)
+                 {
+                  stringBuilder.AppendLine($"{kvp.Key}: {value.Substring(0, 3000)}... [truncated]");
+                  }
             else
-            {
-                stringBuilder.AppendLine($"{kvp.Key}: {kvp.Value}");
-            }
+                 {
+                stringBuilder.AppendLine($"{kvp.Key}: {value}");
+                 }
         }
 
+        int ExtractVariantIndex(string field)
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(field, @"Variant\[(\d+)\]");
+             return (match.Success && int.TryParse(match.Groups[1].Value, out var idx)) ? idx : -1 ;
+        }
         var content = stringBuilder.ToString();
+           // Truncate final document if needed
+        if (content.Length > 20000)
+            {
+            content = content.Substring(0, 20000) + "... [truncated]";
+            }
 
         return new[]
         {
